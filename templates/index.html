@@ -298,7 +298,13 @@
             if(gd.rule > 0) document.getElementById('val-def-rule').innerText = `R${gd.rule}`; document.getElementById('status-def-rule').classList.remove('hidden');
             if(gd.strategy > 0) document.getElementById('val-atk-strat').innerText = `S${String.fromCharCode(64+gd.strategy)}`; document.getElementById('status-atk-strat').classList.remove('hidden');
             
-            const isReadOnly = (myRole !== 'attacker'); 
+            let isReadOnly = true;
+            if (gd.step === 'SETUP' && myRole === 'defender') {
+                isReadOnly = false;
+            } else if (['ATTACK_SELECT', 'ATTACKING'].includes(gd.step) && myRole === 'attacker') {
+                isReadOnly = false;
+            }
+
             renderBoard(gd, isReadOnly);
         });
         
