@@ -139,9 +139,17 @@
                         </div>
                         <div id="def-step-2" class="hidden flex flex-col h-full overflow-hidden relative">
                             <div class="flex-1 overflow-y-auto grid grid-cols-3 md:grid-cols-6 lg:grid-cols-8 gap-2 px-1 p-2 min-h-0 pb-20" id="box-container-def"></div>
-                            <div class="shrink-0 p-3 bg-slate-900 border-t border-slate-700 flex justify-between items-center z-20 shadow-[0_-5px_15px_rgba(0,0,0,0.5)]">
-                                <div><div class="font-mono text-[10px] text-slate-400">已分配</div><span id="alloc-val" class="font-bold text-lg font-mono">0</span></div>
-                                <button onclick="submitDefense()" class="bg-green-600 hover:bg-green-500 text-white px-6 py-2 rounded-lg font-bold shadow-lg text-sm">部署</button>
+                            <div class="shrink-0 p-3 pb-[env(safe-area-inset-bottom,20px)] bg-slate-900 border-t border-slate-700 flex justify-between items-center z-30 shadow-[0_-5px_15px_rgba(0,0,0,0.5)]">
+                                <div class="flex flex-col">
+                                    <div class="font-mono text-[10px] text-slate-400">已分配金额</div>
+                                    <div class="flex items-baseline gap-1">
+                                        <span id="alloc-val" class="font-bold text-xl font-mono text-red-500">0</span>
+                                        <span class="text-xs text-slate-500">/ 3000+</span>
+                                    </div>
+                                </div>
+                                <button onclick="submitDefense()" class="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 text-white px-8 py-3 rounded-xl font-bold shadow-lg text-base transition transform active:scale-95">
+                                    确认部署
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -412,9 +420,62 @@
         }
 
         function lockRule(r) { socket.emit('lock_rule', {roomId: myRid, userId: myId, rule: r}); }
-        function initDefBoxes() { document.getElementById('box-container-def').innerHTML = TAROT_FILES.map((n,i)=>`<div class="bg-slate-800 rounded border border-slate-700 p-1 flex flex-col gap-1"><div class="relative aspect-[2/3] w-full"><img src="/static/cards/${n}.png" class="w-full h-full object-contain bg-slate-900 rounded" onerror="this.src='https://placehold.co/100x150?text=Card'"><div class="zoom-btn" onclick="showZoom(this.previousElementSibling.src)">🔍</div></div><div class="flex items-center gap-1 bg-slate-900 rounded px-1"><span class="text-[10px] text-slate-500 w-4">10</span><input type="number" min="0" class="w-full bg-transparent outline-none text-right inp-c10 text-sm" onchange="checkNeg(this);calcTotal()"></div><div class="flex items-center gap-1 bg-slate-900 rounded px-1"><span class="text-[10px] text-slate-500 w-4">100</span><input type="number" min="0" class="w-full bg-transparent outline-none text-right inp-c100 text-sm" onchange="checkNeg(this);calcTotal()"></div></div>`).join(''); }
+        
+        // --- 手机端优化：改进的输入框生成 ---
+        function initDefBoxes() {
+            document.getElementById('box-container-def').innerHTML = TAROT_FILES.map((n, i) => `
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-2 flex flex-col gap-2 shadow-sm" onclick="this.querySelector('.inp-c10').focus()">
+                    <div class="relative aspect-[2/3] w-full bg-slate-900 rounded-lg overflow-hidden">
+                        <img src="/static/cards/${n}.png" class="w-full h-full object-contain opacity-80" onerror="this.src='https://placehold.co/100x150?text=Card'">
+                        <div class="absolute top-0 right-0 bg-black/40 text-white px-2 rounded-bl-lg text-xs font-bold font-mono">#${i+1}</div>
+                        <div class="zoom-btn" onclick="event.stopPropagation();showZoom(this.previousElementSibling.previousElementSibling.src)">🔍</div>
+                    </div>
+                    
+                    <div class="space-y-1">
+                        <div class="flex items-center gap-2 bg-slate-900/50 rounded-lg px-2 py-1 border border-slate-700/50" onclick="event.stopPropagation();this.querySelector('input').focus()">
+                            <span class="text-[10px] text-blue-400 font-bold w-6 shrink-0">10</span>
+                            <input type="number" inputmode="numeric" pattern="[0-9]*" min="0" value="0" 
+                                class="w-full bg-transparent outline-none text-right inp-c10 text-base font-mono font-bold text-white placeholder-slate-600" 
+                                oninput="checkNeg(this);calcTotal()" 
+                                onfocus="this.select()">
+                        </div>
+                        
+                        <div class="flex items-center gap-2 bg-slate-900/50 rounded-lg px-2 py-1 border border-slate-700/50" onclick="event.stopPropagation();this.querySelector('input').focus()">
+                            <span class="text-[10px] text-yellow-400 font-bold w-6 shrink-0">100</span>
+                            <input type="number" inputmode="numeric" pattern="[0-9]*" min="0" value="0" 
+                                class="w-full bg-transparent outline-none text-right inp-c100 text-base font-mono font-bold text-white placeholder-slate-600" 
+                                oninput="checkNeg(this);calcTotal()" 
+                                onfocus="this.select()">
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+            calcTotal();
+        }
+
         function checkNeg(el){ if(el.value<0) el.value=0; }
-        function calcTotal() { let t=0; document.querySelectorAll('.inp-c10').forEach((el,i)=>{ t += (+el.value||0)*10 + (+document.querySelectorAll('.inp-c100')[i].value||0)*100; }); const v=document.getElementById('alloc-val'); v.innerText=t; v.className = t<3000 ? "text-red-500 font-bold text-lg font-mono" : "text-green-400 font-bold text-lg font-mono"; }
+        
+        // --- 手机端优化：实时计算总额 ---
+        function calcTotal() { 
+            let t = 0; 
+            const c10Inputs = document.querySelectorAll('.inp-c10');
+            const c100Inputs = document.querySelectorAll('.inp-c100');
+            
+            c10Inputs.forEach((el, i) => { 
+                const v10 = parseInt(el.value) || 0;
+                const v100 = parseInt(c100Inputs[i].value) || 0;
+                t += v10 * 10 + v100 * 100; 
+            }); 
+            
+            const v = document.getElementById('alloc-val'); 
+            v.innerText = t.toLocaleString(); 
+            if (t < 3000) {
+                v.className = "font-bold text-xl font-mono text-red-500 transition-colors";
+            } else {
+                v.className = "font-bold text-xl font-mono text-green-400 transition-colors";
+            }
+        }
+
         function submitDefense() { const boxes = []; let hasNeg=false; document.querySelectorAll('.inp-c10').forEach((el,i)=>{ let c10=+el.value||0, c100=+document.querySelectorAll('.inp-c100')[i].value||0; if(c10<0||c100<0) hasNeg=true; boxes.push({c10, c100}); }); if(hasNeg) return Swal.fire('错误','不能为负','error'); let total = boxes.reduce((a,b)=>a+b.c10*10+b.c100*100, 0); if(total < 3000) return Swal.fire('金额不足','部署金额需至少3000','warning'); socket.emit('submit_defense', {roomId: myRid, userId: myId, boxes}); }
         function lockStrat(s) { socket.emit('select_strategy', {roomId: myRid, userId: myId, strategy: s}); }
         
