@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()
+
 import time, random, uuid
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -5,7 +8,8 @@ from game_logic import validate_defense, calculate_grade
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret_key_haff_arena'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=60)
+# 增加 ping_interval 防止假死
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=60, ping_interval=25)
 
 rooms = {} 
 online_users = {} 
@@ -47,7 +51,7 @@ def on_reconnect(data):
         is_spectator = (found_room["state"] == "GAME" and uid not in found_room["players"])
         emit('join_success', {**found_room, "is_spectator": is_spectator, "is_reconnect": True})
         if found_room["state"] == "GAME":
-            socketio.sleep(0.2)
+            socketio.sleep(0.1) # 稍微等待确保客户端就绪
             broadcast_game_state(rid, target_uid=uid)
             emit('reconnect_result', {'success': True, 'msg': f'已重连至房间 {rid}'})
         else:
@@ -127,39 +131,41 @@ def on_chat(data):
 
 def game_timer_task(rid, match_id, round_num, duration, timer_stamp):
     socketio.sleep(duration)
-    room = rooms.get(rid)
-    if not room: return
-    match = room["matches"].get(match_id)
-    if not match: return
-    
-    # 检查时间戳是否一致，如果不一致说明阶段已变更
-    if match["timer_stamp"] != timer_stamp:
-        return 
+    # 必须在上下文之外安全访问
+    try:
+        room = rooms.get(rid)
+        if not room: return
+        match = room["matches"].get(match_id)
+        if not match: return
+        
+        if match["timer_stamp"] != timer_stamp:
+            return 
 
-    gd = match["game_data"]
-    
-    # 防守超时
-    if match["round"] == round_num and gd["step"] == "SETUP":
-        defender = match["defender"]
-        attacker = match["attacker"]
-        penalty = 3000
+        gd = match["game_data"]
         
-        # 扣除防守方3000，给予攻方3000
-        room["scores"][defender] -= penalty
-        room["scores"][attacker] += penalty
+        # 防守超时
+        if match["round"] == round_num and gd["step"] == "SETUP":
+            defender = match["defender"]
+            attacker = match["attacker"]
+            penalty = 3000
+            
+            room["scores"][defender] -= penalty
+            room["scores"][attacker] += penalty
+            
+            msg = f"⏱️ 防守方超时未部署！扣除 {penalty} 转移给攻方。"
+            socketio.emit('chat_message', {'user': '裁判', 'msg': msg, 'type': 'info'}, room=rid)
+            
+            finish_round(rid, match, reason="DEF_TIMEOUT", penalty_data={
+                'def_delta': -penalty, 'atk_delta': penalty
+            })
         
-        msg = f"⏱️ 防守方超时未部署！扣除 {penalty} 转移给攻方。"
-        socketio.emit('chat_message', {'user': '裁判', 'msg': msg, 'type': 'info'}, room=rid)
-        
-        finish_round(rid, match, reason="DEF_TIMEOUT", penalty_data={
-            'def_delta': -penalty, 'atk_delta': penalty
-        })
-    
-    # 进攻超时
-    elif match["round"] == round_num and gd["step"] in ["ATTACK_SELECT", "ATTACKING"]:
-        msg = "⏳ 攻方思考超时！本轮结束，未获取的资金全额退还守方。"
-        socketio.emit('chat_message', {'user': '裁判', 'msg': msg, 'type': 'info'}, room=rid)
-        finish_round(rid, match, reason="ATK_TIMEOUT")
+        # 进攻超时
+        elif match["round"] == round_num and gd["step"] in ["ATTACK_SELECT", "ATTACKING"]:
+            msg = "⏳ 攻方思考超时！本轮结束，未获取的资金全额退还守方。"
+            socketio.emit('chat_message', {'user': '裁判', 'msg': msg, 'type': 'info'}, room=rid)
+            finish_round(rid, match, reason="ATK_TIMEOUT")
+    except Exception as e:
+        print(f"Timer error: {e}")
 
 @socketio.on('start_game')
 def on_start(data):
@@ -177,7 +183,6 @@ def on_start(data):
     for i in range(0, len(players), 2):
         match_id = str(uuid.uuid4())[:8]
         current_time = time.time()
-        # 初始化：防守阶段 5分钟 (300秒)
         t_stamp = str(uuid.uuid4())
         room["matches"][match_id] = {
             "id": match_id, "p1": players[i], "p2": players[i+1],
@@ -197,7 +202,7 @@ def broadcast_game_state(rid, target_uid=None):
     match_list = [{"id": m["id"], "p1": m["p1"], "p2": m["p2"], "round": m["round"], "step": m["game_data"]["step"]} for m in room["matches"].values()]
     common_data = {"match_list": match_list, "scores": room["scores"]}
     targets = [target_uid] if target_uid else room["players"] + list(online_users.values())
-    targets = list(set(targets)) # 去重
+    targets = list(set(targets)) 
 
     for p in targets:
         sid = next((k for k,v in online_users.items() if v == p), None)
@@ -215,7 +220,6 @@ def broadcast_game_state(rid, target_uid=None):
                         role_info = {"role": "defender" if p == m["defender"] else "attacker", "match_id": m["id"]}
                         break
         
-        # 观战逻辑：默认看第一桌
         if role_info["role"] == "spectator" and not my_match and len(room["matches"]) > 0:
             my_match = list(room["matches"].values())[0]
 
@@ -247,14 +251,12 @@ def on_submit_def(data):
     valid, msg = validate_defense(rule, boxes, room["scores"][uid])
     if not valid: return emit('error', {'msg': msg})
     
-    # 扣款
     total_cost = sum([b['c10']*10 + b['c100']*100 for b in boxes])
     room["scores"][uid] -= total_cost
     
     match["game_data"]["boxes"] = boxes
     match["game_data"]["step"] = "ATTACK_SELECT"
     
-    # 切换计时器 -> 进攻方3分钟 (180s)
     new_t_stamp = str(uuid.uuid4())
     match["timer_stamp"] = new_t_stamp
     match["game_data"]["deadline"] = time.time() + 180
@@ -269,7 +271,6 @@ def on_submit_def(data):
     match["game_data"]["public_boxes"] = public_boxes
     broadcast_game_state(rid)
 
-# 实时同步攻方选择给观众/守方
 @socketio.on('sync_selection_req')
 def on_sync_selection(data):
     rid, uid = data['roomId'], data['userId']
@@ -325,6 +326,13 @@ def on_s4_submit_target(data):
     elif s4["stage"] == 2 and match["defender"] == uid:
         s4["target_y"] = target
         s4["stage"] = 3
+        
+        # 守方设定数字后，重置盒子状态，确保 UI 刷新且可重新点击（逻辑上是新的7次）
+        for pb in gd["public_boxes"]: 
+            pb["revealed"] = False 
+            pb["real_c10"] = 0 
+            pb["real_c100"] = 0
+        
         socketio.emit('chat_message', {'user': '系统', 'msg': f'守方设定目标为寻找 {target} 张10元币。攻方继续揭示7个盒子。', 'type': 'info'}, room=rid)
         broadcast_game_state(rid)
 
@@ -351,11 +359,13 @@ def on_s4_reveal(data):
             msg = f"✅ 第一阶段目标 [{s4['target_x']}] 寻找成功！" if found else f"❌ 第一阶段目标 [{s4['target_x']}] 寻找失败。"
             if found: s4["wins"] += 1
             socketio.emit('chat_message', {'user': '系统', 'msg': msg, 'type': 'info'}, room=rid)
+            # 阶段结束，临时重置以供守方输入时画面干净，实际重置在 defender 输入后再次确认
             for pb in gd["public_boxes"]: pb["revealed"] = False; pb["real_c10"] = 0; pb["real_c100"] = 0
             s4["stage"] = 2 
             
     elif s4["stage"] == 3:
         if box_idx in s4["revealed_phase2"]: return
+        
         s4["revealed_phase2"].append(box_idx)
         real_box = boxes[box_idx]
         gd["public_boxes"][box_idx].update({"revealed": True, "real_c10": real_box['c10'], "real_c100": real_box['c100']})
@@ -391,15 +401,26 @@ def on_s4_execute_pick(data):
 
     profit = 0
     boxes = gd["boxes"]
+    
+    # 修复结算逻辑，参照方案A，直接获取
     for i in indices:
         if i < 0 or i >= 22: continue
         raw = boxes[i]
         if raw.get('taken', False): continue
-        val_c10 = raw['c10']; val_c100 = raw['c100']
-        current_val = val_c10 * 10 + val_c100 * 100
-        profit += current_val
-        raw['c10'] = 0; raw['c100'] = 0; raw['taken'] = True
-        gd["public_boxes"][i].update({"revealed": True, "taken": True, "real_c10": val_c10, "real_c100": val_c100})
+        
+        # 计算价值
+        val = raw['c10'] * 10 + raw['c100'] * 100
+        profit += val
+        
+        # 标记为已拿走，并公开详情 (参照方案A逻辑)
+        gd["public_boxes"][i].update({
+            "revealed": True, 
+            "taken": True, 
+            "real_c10": raw['c10'], 
+            "real_c100": raw['c100']
+        })
+        # 实际数据清零并标记
+        raw.update({'c10': 0, 'c100': 0, 'taken': True})
 
     rooms[rid]["scores"][match["attacker"]] += profit
     msg = f"方案D结算完毕，攻方掠夺了 {len(indices)} 个盒子，共计获得 {profit} 代币"
@@ -512,7 +533,7 @@ def finish_round(rid, match, reason="NORMAL", penalty_data=None):
     attacker = match["attacker"]
     gd = match["game_data"]
     
-    # 回收剩余代币给守方
+    # 回收剩余代币给守方 (未被拿走的)
     refund_total = 0
     for b in gd["boxes"]:
         if not b.get('taken', False):
@@ -521,18 +542,18 @@ def finish_round(rid, match, reason="NORMAL", penalty_data=None):
     
     room["scores"][defender] += refund_total
     
-    # 历史记录
     if reason == "DEF_TIMEOUT":
         result_text = "防守部署超时"
         pnl_def = penalty_data['def_delta']
         pnl_atk = penalty_data['atk_delta']
     elif reason == "ATK_TIMEOUT":
         result_text = "进攻思考超时"
-        pnl_def = refund_total 
+        # 进攻超时，剩余款项已通过 refund_total 退还给守方，无需额外操作，故 delta 为 0
+        pnl_def = 0 
         pnl_atk = 0
     else:
         result_text = "正常结算"
-        pnl_def = refund_total 
+        pnl_def = 0 
         pnl_atk = penalty_data['atk_delta'] if penalty_data else 0
 
     history_entry = {
@@ -559,7 +580,6 @@ def finish_round(rid, match, reason="NORMAL", penalty_data=None):
     else:
         match["defender"], match["attacker"] = match["attacker"], match["defender"]
         match["round"] += 1
-        # 新回合：防守阶段 5分钟
         new_t_stamp = str(uuid.uuid4())
         match["timer_stamp"] = new_t_stamp
         match["game_data"] = { "step": "SETUP", "boxes": [], "rule": 0, "strategy": 0, "deadline": time.time() + 300 }

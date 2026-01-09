@@ -1,0 +1,89 @@
+/* static/style.css */
+* { box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden; /* 禁止全屏滚动 */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.page-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh; /* 视口高度 */
+    background-color: #f0f2f5;
+}
+
+/* 顶部区域：游戏信息 */
+.top-area {
+    flex-shrink: 0;
+    padding: 10px;
+    background: #fff;
+    border-bottom: 1px solid #ddd;
+    text-align: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    z-index: 10;
+}
+
+.game-info {
+    display: flex;
+    justify-content: space-around;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+/* 聊天历史：可滚动区域 */
+.chat-history {
+    flex: 1; /* 占据剩余空间 */
+    overflow-y: auto; /* 允许内部滚动 */
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    -webkit-overflow-scrolling: touch; /* iOS 平滑滚动 */
+}
+
+.message {
+    padding: 8px 12px;
+    border-radius: 8px;
+    max-width: 85%;
+    word-break: break-all;
+    font-size: 15px;
+    line-height: 1.4;
+}
+
+.msg-system { background: #e1f5fe; color: #0277bd; align-self: center; font-size: 12px; }
+.msg-self { background: #95ec69; align-self: flex-end; }
+.msg-other { background: #fff; align-self: flex-start; border: 1px solid #eee; }
+
+/* 底部输入框：固定不动 */
+.input-area {
+    flex-shrink: 0;
+    background: #fff;
+    padding: 10px;
+    border-top: 1px solid #ddd;
+    display: flex;
+    gap: 10px;
+    /* 适配 iPhone 底部黑条 */
+    padding-bottom: env(safe-area-inset-bottom, 10px); 
+}
+
+.input-area input {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 20px;
+    font-size: 16px; /* 防止 iOS 放大 */
+    outline: none;
+}
+
+.input-area button {
+    padding: 0 20px;
+    border-radius: 20px;
+    border: none;
+    background: #007bff;
+    color: white;
+    font-weight: bold;
+}
