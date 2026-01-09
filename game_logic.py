@@ -2,8 +2,8 @@
 def calculate_grade(total_bills):
     """根据金额返回模糊分级"""
     #if total_bills <= 5: return "少"
-    if total_bills <= 10: return "较少"
-    if total_bills <= 20: return "一般"
+    if total_bills <= 7: return "较少"
+    if total_bills <= 15: return "一般"
     #if total_bills <= 20: return "较多"
     return "较多"
 
