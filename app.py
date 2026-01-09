@@ -275,6 +275,7 @@ def on_select_strat(data):
     rule = match["game_data"]["rule"]
     if (strat==2 and rule!=1) or (strat==3 and rule!=2) or (strat==4 and rule!=3): return emit('error', {'msg': '策略不匹配'})
     gd = match["game_data"]
+    # 策略2 8次，策略1 8次
     gd.update({"strategy": strat, "step": "ATTACKING", "attempts": 8})
     if strat == 3: gd["guesses"] = 0
     elif strat == 4: gd["s4"] = {"stage": 0, "target_x": 0, "target_y": 0, "revealed_phase1": [], "revealed_phase2": [], "wins": 0}
@@ -308,6 +309,10 @@ def on_s4_reveal(data):
     s4 = gd.get("s4")
     box_idx = int(data['boxId'])
     
+    # 防止在 sleep 期间的多余点击
+    if (s4["stage"] == 1 and len(s4["revealed_phase1"]) >= 7) or (s4["stage"] == 3 and len(s4["revealed_phase2"]) >= 7):
+        return
+
     def reveal(idx_list):
         if box_idx in idx_list: return False
         idx_list.append(box_idx)
@@ -315,21 +320,38 @@ def on_s4_reveal(data):
         gd["public_boxes"][box_idx].update({"revealed": True, "real_c10": real['c10'], "real_c100": real['c100']})
         return True
 
-    if s4["stage"] == 1 and reveal(s4["revealed_phase1"]):
-        if len(s4["revealed_phase1"]) >= 7:
+    # 1. 执行揭示并立即广播
+    updated = False
+    if s4["stage"] == 1: updated = reveal(s4["revealed_phase1"])
+    elif s4["stage"] == 3: updated = reveal(s4["revealed_phase2"])
+    
+    if updated:
+        broadcast_game_state(rid)
+        
+        # 2. 如果达到了7个，暂停3秒展示结果，然后清空桌面进入下一阶段
+        if s4["stage"] == 1 and len(s4["revealed_phase1"]) >= 7:
+            socketio.sleep(3) # 暂停等待用户看清
+            
             found = any(gd["boxes"][i]['c10'] == s4["target_x"] for i in s4["revealed_phase1"])
             if found: s4["wins"] += 1
             socketio.emit('chat_message', {'user': '系统', 'msg': f"{'✅' if found else '❌'} 目标[{s4['target_x']}] {'找到' if found else '未找到'}", 'type': 'info'}, room=rid)
+            
+            # 隐藏所有盒子进入下一阶段
             for pb in gd["public_boxes"]: pb["revealed"] = False
             s4["stage"] = 2
-    elif s4["stage"] == 3 and reveal(s4["revealed_phase2"]):
-        if len(s4["revealed_phase2"]) >= 7:
+            broadcast_game_state(rid)
+            
+        elif s4["stage"] == 3 and len(s4["revealed_phase2"]) >= 7:
+            socketio.sleep(3) # 暂停等待用户看清
+            
             found = any(gd["boxes"][i]['c10'] == s4["target_y"] for i in s4["revealed_phase2"])
             if found: s4["wins"] += 1
             socketio.emit('chat_message', {'user': '系统', 'msg': f"{'✅' if found else '❌'} 目标[{s4['target_y']}] {'找到' if found else '未找到'}", 'type': 'info'}, room=rid)
+            
+            # 隐藏所有盒子进入结算阶段
             for pb in gd["public_boxes"]: pb["revealed"] = False
             s4["stage"] = 4
-    broadcast_game_state(rid)
+            broadcast_game_state(rid)
 
 @socketio.on('s4_execute_pick')
 def on_s4_execute_pick(data):
@@ -371,16 +393,31 @@ def on_attack(data):
         raw.update({'c10':0, 'c100':0, 'taken':True})
         gd["attempts"] -= 1
         if gd["attempts"] <= 0: done = True
+        
     elif strat == 2:
         iA, iB, guess = data['boxA'], data['boxB'], data['guess']
         valA, valB = boxes[iA]['c10']*10+boxes[iA]['c100']*100, boxes[iB]['c10']*10+boxes[iB]['c100']*100
         win = (guess == 'more' and valB >= valA) or (guess == 'less' and valB < valA)
-        for i in [iA, iB]:
-            gd["public_boxes"][i].update({"revealed":True, "taken":True, "real_c10":boxes[i]['c10'], "real_c100":boxes[i]['c100']})
-            boxes[i].update({'c10':0, 'c100':0, 'taken':True})
-        if win: profit = valA + valB
+        
+        # 优化：明确反馈比大小结果
+        res_text = "成功" if win else "失败"
+        res_icon = "✅" if win else "❌"
+        socketio.emit('chat_message', {'user': '系统', 'msg': f'{res_icon} 猜测{res_text} ({valA} vs {valB})', 'type': 'info'}, room=rid)
+        
+        if win:
+            # 猜对：掠夺资金
+            for i in [iA, iB]:
+                gd["public_boxes"][i].update({"revealed":True, "taken":True, "real_c10":boxes[i]['c10'], "real_c100":boxes[i]['c100']})
+                boxes[i].update({'c10':0, 'c100':0, 'taken':True})
+            profit = valA + valB
+        else:
+            # 猜错：仅展示，不销毁，资金保留用于回合退款
+            for i in [iA, iB]:
+                gd["public_boxes"][i].update({"revealed":True, "real_c10":boxes[i]['c10'], "real_c100":boxes[i]['c100']})
+        
         gd["attempts"] -= 1
         if gd["attempts"] <= 0: done = True
+        
     elif strat == 3:
         g = int(data['guessIdx']); gd["guesses"] = gd.get("guesses", 0) + 1
         spec = next((i for i, b in enumerate(boxes) if b['c100'] > 0), 0)
@@ -397,12 +434,23 @@ def on_attack(data):
         else: socketio.emit('strat3_hint', {'hint': "大了" if g > spec else "小了", 'count': gd["guesses"]}, room=rid)
     
     if profit > 0: rooms[rid]["scores"][match["attacker"]] += profit
-    if done: finish_round(rid, match, reason="NORMAL", penalty_data={'atk_delta': profit})
-    else: broadcast_game_state(rid)
+    
+    if done:
+        broadcast_game_state(rid)
+        socketio.sleep(1) # 短暂延迟确保前端渲染完最后一帧
+        finish_round(rid, match, reason="NORMAL", penalty_data={'atk_delta': profit})
+    else:
+        broadcast_game_state(rid)
 
 def finish_round(rid, match, reason="NORMAL", penalty_data=None):
     room = rooms.get(rid)
     if not room: return
+    
+    # 增加状态锁：防止Race Condition导致双重退款
+    gd = match["game_data"]
+    if gd.get("step") == "FINISHING": return
+    gd["step"] = "FINISHING"
+
     refund = sum([b['c10']*10 + b['c100']*100 for b in match["game_data"]["boxes"] if not b.get('taken', False)])
     room["scores"][match["defender"]] += refund
     room["history"].append({
